@@ -15,16 +15,47 @@ from aiogram.types import (
 # CONFIG
 # =========================================================
 
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+BOT_TOKEN = "8734473040:AAFghbS5WXw0wOMfdWzEdu4ke8amn0graeY"
 
 # آیدی Owner ها را اینجا قرار بده
 OWNER_IDS = {
-    111111111,
-    222222222,
-    333333333,
+    8424103847,
+    6716559782,
 }
 
 DB_NAME = "diamonds.db"
+
+# =========================================================
+# پنل اموجی‌های پرمیوم
+# =========================================================
+# هر اموجی که توی ربات استفاده شده اینجا لیست شده.
+# جلوی هرکدوم، آیدی اموجی پرمیوم موردنظرت رو قرار بده.
+# اگر برای یک اموجی نمی‌خوای نسخه‌ی پرمیوم نمایش داده بشه،
+# مقدارش رو None بذار (همون اموجی معمولی نمایش داده می‌شود).
+#
+# نکته: این اموجی‌های پرمیوم فقط زمانی نمایش داده می‌شوند که
+# اکانت Owner ربات دارای Telegram Premium باشد.
+PREMIUM_EMOJIS = {
+    "❌": "5416076321442777828",
+    "💎": "5399837316384566936", 
+    "✅": "5429501538806548545",
+    "⚡️": "5780464752744468119",
+    "👤": "5470145449983748652",
+    "🎁": "5778598452015402915",
+    "🏆": "5474546992598264488",
+    "💰": "5778407832776871799",
+    "📭": "5372930724959624606",
+    "🥇": "5832692422647226240",
+    "🥈": "5834620746999012948",
+    "🥉": "5832346686369832003",
+    "🟢": "5778222071146353172",
+    "🔴": "5778317805967380891",
+    "⚙️": "5843911663203392756",
+    "💬": "5778418364036681141",
+    "👥": "5391272000545110592",
+    "⚠️": "5819051035284479206",
+    "🎉": "5474646232112573246",
+}
 
 # =========================================================
 # LOGGING
@@ -41,6 +72,64 @@ logging.basicConfig(
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# =========================================================
+# EMOJIFY — جایگزینی خودکار اموجی‌ها با نسخه‌ی پرمیوم
+# =========================================================
+# این تابع هر اموجی موجود در PREMIUM_EMOJIS را که در متن پیدا
+# شود، داخل تگ <tg-emoji emoji-id="..."> قرار می‌دهد تا تلگرام
+# نسخه‌ی پرمیوم آن را نمایش دهد (نیازمند parse_mode="HTML").
+# اموجی‌هایی که مقدارشان None است دست‌نخورده باقی می‌مانند.
+
+def emojify(text):
+    if not isinstance(text, str):
+        return text
+
+    for emoji_char, emoji_id in PREMIUM_EMOJIS.items():
+        if not emoji_id:
+            continue
+
+        if emoji_char in text:
+            text = text.replace(
+                emoji_char,
+                f'<tg-emoji emoji-id="{emoji_id}">{emoji_char}</tg-emoji>'
+            )
+
+    return text
+
+
+_original_message_answer = Message.answer
+_original_message_edit_text = Message.edit_text
+_original_bot_send_message = Bot.send_message
+
+
+async def _patched_message_answer(self, text=None, *args, **kwargs):
+    if text is not None:
+        text = emojify(text)
+        kwargs.setdefault("parse_mode", "HTML")
+
+    return await _original_message_answer(self, text, *args, **kwargs)
+
+
+async def _patched_message_edit_text(self, text=None, *args, **kwargs):
+    if text is not None:
+        text = emojify(text)
+        kwargs.setdefault("parse_mode", "HTML")
+
+    return await _original_message_edit_text(self, text, *args, **kwargs)
+
+
+async def _patched_bot_send_message(self, chat_id, text=None, *args, **kwargs):
+    if text is not None:
+        text = emojify(text)
+        kwargs.setdefault("parse_mode", "HTML")
+
+    return await _original_bot_send_message(self, chat_id, text, *args, **kwargs)
+
+
+Message.answer = _patched_message_answer
+Message.edit_text = _patched_message_edit_text
+Bot.send_message = _patched_bot_send_message
 
 # =========================================================
 # DATABASE
@@ -290,7 +379,7 @@ def get_target_and_amount(message: Message):
 # START
 # =========================================================
 
-@dp.message(Command("start"))
+@dp.message(Command("start", ignore_case=True))
 async def start_handler(message: Message):
     register_user(message.from_user)
 
@@ -304,7 +393,7 @@ async def start_handler(message: Message):
 # BALANCE
 # =========================================================
 
-@dp.message(Command("balance"))
+@dp.message(Command("balance", ignore_case=True))
 async def balance_handler(message: Message):
     register_user(message.from_user)
 
@@ -315,10 +404,48 @@ async def balance_handler(message: Message):
     )
 
 # =========================================================
+# TOP (بیشترین دارندگان الماس)
+# =========================================================
+
+@dp.message(Command("top", ignore_case=True))
+async def top_handler(message: Message):
+    register_user(message.from_user)
+
+    rows = db.execute("""
+        SELECT user_id, username, first_name, diamonds
+        FROM users
+        WHERE diamonds > 0
+        ORDER BY diamonds DESC
+        LIMIT 10
+    """).fetchall()
+
+    if not rows:
+        await message.answer("📭 هنوز هیچ کاربری الماس ندارد.")
+        return
+
+    medals = ["🥇", "🥈", "🥉"]
+
+    lines = ["🏆 <b>بیشترین دارندگان الماس</b>\n"]
+
+    for i, row in enumerate(rows):
+        rank_icon = medals[i] if i < len(medals) else f"{i + 1}."
+
+        name = row["first_name"] or "User"
+
+        lines.append(
+            f"{rank_icon} {name} — <b>{row['diamonds']}</b> 💎"
+        )
+
+    await message.answer(
+        "\n".join(lines),
+        parse_mode="HTML"
+    )
+
+# =========================================================
 # TRANSFER
 # =========================================================
 
-@dp.message(Command("give"))
+@dp.message(Command("give", ignore_case=True))
 async def give_handler(message: Message):
     register_user(message.from_user)
 
@@ -382,7 +509,7 @@ async def give_handler(message: Message):
 # OWNER GIVE
 # =========================================================
 
-@dp.message(Command("Prgivealmas"))
+@dp.message(Command("Prgivealmas", ignore_case=True))
 async def owner_give_handler(message: Message):
     if not await require_owner(message):
         return
@@ -426,17 +553,17 @@ async def owner_give_handler(message: Message):
 
     await message.answer(
         "✅ الماس با موفقیت اضافه شد.\n\n"
-        f"👤 ID: `{target_id}`\n"
+        f"👤 ID: <code>{target_id}</code>\n"
         f"💎 مقدار: +{amount}\n"
         f"💰 موجودی جدید: {new_balance}",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 # =========================================================
 # OWNER REMOVE
 # =========================================================
 
-@dp.message(Command("Prremovealmas"))
+@dp.message(Command("Prremovealmas", ignore_case=True))
 async def owner_remove_handler(message: Message):
     if not await require_owner(message):
         return
@@ -486,17 +613,17 @@ async def owner_remove_handler(message: Message):
 
     await message.answer(
         "✅ الماس با موفقیت کم شد.\n\n"
-        f"👤 ID: `{target_id}`\n"
+        f"👤 ID: <code>{target_id}</code>\n"
         f"💎 مقدار: -{amount}\n"
         f"💰 موجودی جدید: {new_balance}",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 # =========================================================
 # SET MESSAGE COUNT
 # =========================================================
 
-@dp.message(Command("Prsetmessages"))
+@dp.message(Command("Prsetmessages", ignore_case=True))
 async def set_messages_handler(message: Message):
     if not await require_owner(message):
         return
@@ -530,7 +657,7 @@ async def set_messages_handler(message: Message):
 # SET REWARD
 # =========================================================
 
-@dp.message(Command("Prsetreward"))
+@dp.message(Command("Prsetreward", ignore_case=True))
 async def set_reward_handler(message: Message):
     if not await require_owner(message):
         return
@@ -564,7 +691,7 @@ async def set_reward_handler(message: Message):
 # ENABLE / DISABLE AUTO EVENT
 # =========================================================
 
-@dp.message(Command("Prgiveevent"))
+@dp.message(Command("Prgiveevent", ignore_case=True))
 async def give_event_handler(message: Message):
     if not await require_owner(message):
         return
@@ -592,7 +719,7 @@ async def give_event_handler(message: Message):
 # SET REWARD CHAT
 # =========================================================
 
-@dp.message(Command("Prsetchat"))
+@dp.message(Command("Prsetchat", ignore_case=True))
 async def set_chat_handler(message: Message):
     if not await require_owner(message):
         return
@@ -613,7 +740,7 @@ async def set_chat_handler(message: Message):
 # SETTINGS
 # =========================================================
 
-@dp.message(Command("Prsettings"))
+@dp.message(Command("Prsettings", ignore_case=True))
 async def settings_handler(message: Message):
     if not await require_owner(message):
         return
@@ -659,7 +786,9 @@ async def create_reward(chat_id):
             [
                 InlineKeyboardButton(
                     text=f"💎 دریافت {reward_amount} الماس",
-                    callback_data=f"claim:{chat_id}"
+                    callback_data=f"claim:{chat_id}",
+                    style="success",
+                    icon_custom_emoji_id=PREMIUM_EMOJIS["💎"],
                 )
             ]
         ]
@@ -684,7 +813,7 @@ async def create_reward(chat_id):
     return True, "ok"
 
 
-@dp.message(Command("Prdrop"))
+@dp.message(Command("Prdrop", ignore_case=True))
 async def immediate_drop_handler(message: Message):
     if not await require_owner(message):
         return
