@@ -1,4 +1,6 @@
 import asyncio
+import csv
+import io
 import logging
 import sqlite3
 
@@ -9,6 +11,7 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    BufferedInputFile,
 )
 
 # =========================================================
@@ -168,6 +171,17 @@ CREATE TABLE IF NOT EXISTS active_rewards (
 )
 """)
 
+db.execute("""
+CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    from_id INTEGER,
+    to_id INTEGER,
+    amount INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+""")
+
 db.commit()
 
 # =========================================================
@@ -186,6 +200,7 @@ set_default_setting("messages_required", 500)
 set_default_setting("reward_amount", 1)
 set_default_setting("reward_enabled", "on")
 set_default_setting("reward_chat_id", "0")
+set_default_setting("claim_limit_per_day", 3)
 
 # =========================================================
 # DATABASE FUNCTIONS
@@ -321,6 +336,15 @@ def transfer_diamonds(sender_id, receiver_id, amount):
         return False, "error"
 
 
+def log_transaction(type_, from_id, to_id, amount):
+    db.execute("""
+        INSERT INTO transactions (type, from_id, to_id, amount)
+        VALUES (?, ?, ?, ?)
+    """, (type_, from_id, to_id, amount))
+
+    db.commit()
+
+
 def is_owner(user_id):
     return user_id in OWNER_IDS
 
@@ -442,6 +466,46 @@ async def top_handler(message: Message):
     )
 
 # =========================================================
+# HISTORY (تاریخچه‌ی هر کاربر)
+# =========================================================
+
+@dp.message(Command("history", ignore_case=True))
+async def history_handler(message: Message):
+    register_user(message.from_user)
+
+    user_id = message.from_user.id
+
+    rows = db.execute("""
+        SELECT type, from_id, to_id, amount, created_at
+        FROM transactions
+        WHERE from_id = ? OR to_id = ?
+        ORDER BY id DESC
+        LIMIT 10
+    """, (user_id, user_id)).fetchall()
+
+    if not rows:
+        await message.answer("📭 هنوز هیچ تراکنشی برات ثبت نشده.")
+        return
+
+    labels = {
+        "transfer": "🔁 انتقال",
+        "owner_add": "✅ افزوده‌شده توسط ادمین",
+        "owner_remove": "❌ کسرشده توسط ادمین",
+        "reward": "🎁 جایزه‌ی دراپ",
+    }
+
+    lines = ["💬 <b>تاریخچه‌ی ۱۰ تراکنش آخر</b>\n"]
+
+    for row in rows:
+        label = labels.get(row["type"], row["type"])
+        is_incoming = row["to_id"] == user_id
+        sign = "+" if is_incoming else "-"
+
+        lines.append(f"{label} — {sign}{row['amount']} 💎 ({row['created_at']})")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+# =========================================================
 # TRANSFER
 # =========================================================
 
@@ -500,6 +564,8 @@ async def give_handler(message: Message):
         await message.answer("❌ انتقال انجام نشد.")
         return
 
+    log_transaction("transfer", message.from_user.id, receiver.id, amount)
+
     await message.answer(
         f"💎 {amount} الماس با موفقیت منتقل شد.\n"
         f"👤 گیرنده: {receiver.first_name}"
@@ -548,6 +614,7 @@ async def owner_give_handler(message: Message):
         return
 
     add_diamonds(target_id, amount)
+    log_transaction("owner_add", None, target_id, amount)
 
     new_balance = get_balance(target_id)
 
@@ -608,6 +675,8 @@ async def owner_remove_handler(message: Message):
             "❌ موجودی این کاربر برای کم کردن این مقدار کافی نیست."
         )
         return
+
+    log_transaction("owner_remove", target_id, None, amount)
 
     new_balance = get_balance(target_id)
 
@@ -688,6 +757,41 @@ async def set_reward_handler(message: Message):
     )
 
 # =========================================================
+# SET CLAIM LIMIT (محدودیت گرفتن جایزه در روز)
+# =========================================================
+
+@dp.message(Command("Prsetclaimlimit", ignore_case=True))
+async def set_claim_limit_handler(message: Message):
+    if not await require_owner(message):
+        return
+
+    args = message.text.split()
+
+    if len(args) != 2:
+        await message.answer(
+            "❌ فرمت صحیح:\n"
+            "/Prsetclaimlimit 3\n\n"
+            "(تعداد دفعاتی که هر کاربر می‌تواند در روز روی دکمه‌ی جایزه بزند)"
+        )
+        return
+
+    try:
+        limit = int(args[1])
+    except ValueError:
+        await message.answer("❌ مقدار باید عدد باشد.")
+        return
+
+    if limit <= 0:
+        await message.answer("❌ مقدار باید بیشتر از صفر باشد.")
+        return
+
+    set_setting("claim_limit_per_day", limit)
+
+    await message.answer(
+        f"✅ محدودیت گرفتن جایزه روی {limit} بار در روز تنظیم شد."
+    )
+
+# =========================================================
 # ENABLE / DISABLE AUTO EVENT
 # =========================================================
 
@@ -749,6 +853,7 @@ async def settings_handler(message: Message):
     reward_amount = get_setting("reward_amount")
     reward_enabled = get_setting("reward_enabled")
     reward_chat_id = get_setting("reward_chat_id")
+    claim_limit = get_setting("claim_limit_per_day")
 
     chat_text = (
         str(reward_chat_id)
@@ -761,7 +866,66 @@ async def settings_handler(message: Message):
         f"💬 تعداد پیام: {messages_required}\n"
         f"💎 مقدار جایزه: {reward_amount}\n"
         f"🎁 دراپ خودکار: {reward_enabled}\n"
-        f"👥 گروه دراپ: {chat_text}"
+        f"👥 گروه دراپ: {chat_text}\n"
+        f"⚡ محدودیت گرفتن جایزه: {claim_limit} بار در روز"
+    )
+
+# =========================================================
+# STATS (آمار کلی ربات)
+# =========================================================
+
+@dp.message(Command("Prstats", ignore_case=True))
+async def stats_handler(message: Message):
+    if not await require_owner(message):
+        return
+
+    total_users = db.execute(
+        "SELECT COUNT(*) AS c FROM users"
+    ).fetchone()["c"]
+
+    total_diamonds = db.execute(
+        "SELECT COALESCE(SUM(diamonds), 0) AS s FROM users"
+    ).fetchone()["s"]
+
+    total_transactions = db.execute(
+        "SELECT COUNT(*) AS c FROM transactions"
+    ).fetchone()["c"]
+
+    today_transactions = db.execute("""
+        SELECT COUNT(*) AS c
+        FROM transactions
+        WHERE date(created_at) = date('now')
+    """).fetchone()["c"]
+
+    today_rewards = db.execute("""
+        SELECT COUNT(*) AS c
+        FROM transactions
+        WHERE type = 'reward'
+        AND date(created_at) = date('now')
+    """).fetchone()["c"]
+
+    top_user = db.execute("""
+        SELECT first_name, diamonds
+        FROM users
+        ORDER BY diamonds DESC
+        LIMIT 1
+    """).fetchone()
+
+    top_text = (
+        f"{top_user['first_name']} ({top_user['diamonds']} 💎)"
+        if top_user
+        else "—"
+    )
+
+    await message.answer(
+        "🏆 <b>آمار کلی ربات</b>\n\n"
+        f"👥 تعداد کاربران: {total_users}\n"
+        f"💎 مجموع الماس در گردش: {total_diamonds}\n"
+        f"💬 کل تراکنش‌ها: {total_transactions}\n"
+        f"⚡ تراکنش‌های امروز: {today_transactions}\n"
+        f"🎁 جایزه‌های گرفته‌شده امروز: {today_rewards}\n"
+        f"🥇 بیشترین دارنده: {top_text}",
+        parse_mode="HTML"
     )
 
 # =========================================================
@@ -848,6 +1012,146 @@ async def immediate_drop_handler(message: Message):
         )
 
 # =========================================================
+# BROADCAST (پیام همگانی)
+# =========================================================
+
+# پیام‌های در انتظار تایید (owner_id -> متن پیام)
+pending_broadcasts = {}
+
+
+async def run_broadcast(broadcast_text):
+    users = db.execute("SELECT user_id FROM users").fetchall()
+
+    sent = 0
+    failed = 0
+
+    for row in users:
+        try:
+            await bot.send_message(row["user_id"], broadcast_text)
+            sent += 1
+        except Exception:
+            failed += 1
+
+        await asyncio.sleep(0.05)
+
+    return len(users), sent, failed
+
+
+@dp.message(Command("Prbroadcast", ignore_case=True))
+async def broadcast_handler(message: Message):
+    if not await require_owner(message):
+        return
+
+    text = message.text.split(maxsplit=1)
+
+    if len(text) != 2:
+        await message.answer(
+            "❌ فرمت صحیح:\n"
+            "/Prbroadcast متن پیام"
+        )
+        return
+
+    broadcast_text = text[1]
+
+    user_count = db.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+
+    pending_broadcasts[message.from_user.id] = broadcast_text
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="✅ تایید ارسال",
+            callback_data="broadcast_confirm",
+            style="success",
+        ),
+        InlineKeyboardButton(
+            text="❌ لغو",
+            callback_data="broadcast_cancel",
+            style="danger",
+        ),
+    ]])
+
+    await message.answer(
+        f"⚠️ این پیام به {user_count} کاربر ارسال می‌شود:\n\n"
+        f"{broadcast_text}\n\n"
+        "آیا مطمئنی؟",
+        reply_markup=keyboard
+    )
+
+
+@dp.callback_query(F.data == "broadcast_confirm")
+async def broadcast_confirm_handler(callback: CallbackQuery):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("❌ شما دسترسی ندارید.", show_alert=True)
+        return
+
+    broadcast_text = pending_broadcasts.pop(callback.from_user.id, None)
+
+    if not broadcast_text:
+        await callback.answer(
+            "❌ این درخواست دیگر معتبر نیست.",
+            show_alert=True
+        )
+        return
+
+    await callback.answer("⚡ ارسال شروع شد...")
+
+    await callback.message.edit_text("⚡ در حال ارسال پیام...")
+
+    total, sent, failed = await run_broadcast(broadcast_text)
+
+    await callback.message.edit_text(
+        "✅ ارسال همگانی تمام شد.\n\n"
+        f"✅ موفق: {sent}\n"
+        f"❌ ناموفق: {failed}"
+    )
+
+
+@dp.callback_query(F.data == "broadcast_cancel")
+async def broadcast_cancel_handler(callback: CallbackQuery):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("❌ شما دسترسی ندارید.", show_alert=True)
+        return
+
+    pending_broadcasts.pop(callback.from_user.id, None)
+
+    await callback.message.edit_text("❌ ارسال پیام همگانی لغو شد.")
+    await callback.answer()
+
+# =========================================================
+# EXPORT (خروجی CSV)
+# =========================================================
+
+@dp.message(Command("Prexport", ignore_case=True))
+async def export_handler(message: Message):
+    if not await require_owner(message):
+        return
+
+    rows = db.execute("""
+        SELECT user_id, username, first_name, diamonds
+        FROM users
+        ORDER BY diamonds DESC
+    """).fetchall()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["user_id", "username", "first_name", "diamonds"])
+
+    for row in rows:
+        writer.writerow([
+            row["user_id"],
+            row["username"] or "",
+            row["first_name"],
+            row["diamonds"],
+        ])
+
+    file_bytes = buffer.getvalue().encode("utf-8-sig")
+
+    await message.answer_document(
+        BufferedInputFile(file_bytes, filename="users_export.csv"),
+        caption=f"📭 خروجی {len(rows)} کاربر."
+    )
+
+# =========================================================
 # CLAIM REWARD
 # =========================================================
 
@@ -880,6 +1184,23 @@ async def claim_reward_handler(callback: CallbackQuery):
     if not active or active["message_id"] != message_id:
         await callback.answer(
             "⚡ دیر رسیدی! جایزه قبلاً گرفته شده.",
+            show_alert=True
+        )
+        return
+
+    claim_limit = int(get_setting("claim_limit_per_day"))
+
+    claims_today = db.execute("""
+        SELECT COUNT(*) AS c
+        FROM transactions
+        WHERE type = 'reward'
+        AND to_id = ?
+        AND date(created_at) = date('now')
+    """, (callback.from_user.id,)).fetchone()["c"]
+
+    if claims_today >= claim_limit:
+        await callback.answer(
+            f"⚠️ تو امروز {claim_limit} بار جایزه گرفتی، فردا دوباره امتحان کن.",
             show_alert=True
         )
         return
@@ -922,6 +1243,8 @@ async def claim_reward_handler(callback: CallbackQuery):
             show_alert=True
         )
         return
+
+    log_transaction("reward", None, callback.from_user.id, reward_amount)
 
     await callback.answer(
         f"🎉 {reward_amount} الماس گرفتی!",
