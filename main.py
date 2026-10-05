@@ -60,6 +60,10 @@ PREMIUM_EMOJIS = {
     "👥": "5391272000545110592",
     "⚠️": "5819051035284479206",
     "🎉": "5474646232112573246",
+    "🔁": "5213093310880557054",
+    "⚖️": "5217757718378457464",
+    "📝": "5386724377502952933",
+    "😅": "5348554775510134247",
 }
 
 # =========================================================
@@ -584,16 +588,42 @@ async def give_handler(message: Message):
 
 MAX_BET_DICE = 5
 
+# نوع‌های بازی مجاز برای بت و ایموجی تلگرامی‌شون
+# دارت هم مثل تاس بازه‌ی مقدار ۱ تا ۶ داره، پس دقیقاً با همون
+# منطق جمع/low/high قابل استفاده‌ست.
+GAME_EMOJIS = {
+    "dice": "🎲",
+    "dart": "🎯",
+}
+
+# اسم فارسی هر بازی برای نمایش توی پیام‌ها
+GAME_NAMES = {
+    "dice": "تاس",
+    "dart": "دارت",
+}
+
 # بت‌های در انتظار قبول/رد (token -> اطلاعات بت)
 pending_bets = {}
 
-# بت‌های قبول‌شده که منتظر انداختن تاس هستن
+# بت‌های قبول‌شده که منتظر انداختن تاس/دارت هستن
 # کلید: (chat_id, message_id پیام بت)
 active_dice_bets = {}
 
 
 def format_rolls(rolls):
     return " + ".join(str(r) for r in rolls)
+
+
+def parse_game_type(raw):
+    raw = raw.lower()
+
+    if raw in ("dice", "تاس"):
+        return "dice"
+
+    if raw in ("dart", "دارت"):
+        return "dart"
+
+    return None
 
 
 def parse_bet_target(message: Message):
@@ -630,17 +660,19 @@ async def bet_handler(message: Message):
         await message.answer(
             "❌ باید روی پیام کسی که می‌خوای باهاش بت ببندی Reply بزنی.\n\n"
             "مثال:\n"
-            "/bet 50 2 low   (۵۰ الماس، ۲ تاس، کمترین جمع برنده‌ست)"
+            "/bet 50 2 low        (۵۰ الماس، ۲ تاس، کمترین جمع برنده‌ست)\n"
+            "/bet 50 2 low dart   (همون با دارت 🎯 به‌جای تاس)"
         )
         return
 
     args = message.text.split()
 
-    if len(args) != 4:
+    if len(args) not in (4, 5):
         await message.answer(
             "❌ فرمت صحیح:\n"
-            "/bet مقدار تعداد_تاس low|high\n\n"
-            "مثال: /bet 50 2 low"
+            "/bet مقدار تعداد_پرتاب low|high [dice|dart]\n\n"
+            "مثال: /bet 50 2 low\n"
+            "مثال با دارت: /bet 50 2 low dart"
         )
         return
 
@@ -648,7 +680,7 @@ async def bet_handler(message: Message):
         amount = int(args[1])
         dice_count = int(args[2])
     except ValueError:
-        await message.answer("❌ مقدار و تعداد تاس باید عدد باشند.")
+        await message.answer("❌ مقدار و تعداد پرتاب باید عدد باشند.")
         return
 
     mode = parse_mode(args[3])
@@ -657,12 +689,21 @@ async def bet_handler(message: Message):
         await message.answer("❌ حالت باید low یا high باشد.")
         return
 
+    game_type = "dice"
+
+    if len(args) == 5:
+        game_type = parse_game_type(args[4])
+
+        if game_type is None:
+            await message.answer("❌ نوع بازی باید dice یا dart باشد.")
+            return
+
     if amount <= 0:
         await message.answer("❌ مقدار باید بیشتر از صفر باشد.")
         return
 
     if not (1 <= dice_count <= MAX_BET_DICE):
-        await message.answer(f"❌ تعداد تاس باید بین ۱ تا {MAX_BET_DICE} باشد.")
+        await message.answer(f"❌ تعداد پرتاب باید بین ۱ تا {MAX_BET_DICE} باشد.")
         return
 
     register_user(target)
@@ -681,6 +722,7 @@ async def bet_handler(message: Message):
 
     pending_bets[token] = {
         "type": "diamond",
+        "game_type": game_type,
         "challenger_id": message.from_user.id,
         "challenger_name": message.from_user.first_name,
         "target_id": target.id,
@@ -691,6 +733,8 @@ async def bet_handler(message: Message):
     }
 
     mode_text = "کمترین جمع برنده" if mode == "low" else "بیشترین جمع برنده"
+    game_emoji = GAME_EMOJIS[game_type]
+    game_name = GAME_NAMES[game_type]
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
@@ -706,9 +750,9 @@ async def bet_handler(message: Message):
     ]])
 
     await message.answer(
-        f"🎲 {message.from_user.first_name} به {target.first_name} پیشنهاد بت داد:\n\n"
+        f"{game_emoji} {message.from_user.first_name} به {target.first_name} پیشنهاد بت داد:\n\n"
         f"💎 مقدار: {amount} الماس\n"
-        f"🎲 تعداد تاس: {dice_count}\n"
+        f"{game_emoji} نوع: {game_name} | تعداد پرتاب: {dice_count}\n"
         f"⚖️ قانون: {mode_text}\n\n"
         f"{target.first_name}, قبول می‌کنی؟",
         reply_markup=keyboard
@@ -725,7 +769,8 @@ async def custom_bet_handler(message: Message):
         await message.answer(
             "❌ باید روی پیام کسی که می‌خوای باهاش بت ببندی Reply بزنی.\n\n"
             "مثال:\n"
-            "/custombet 2 high بازنده باید ۱۰۰ تا پوش‌آپ بزنه"
+            "/custombet 2 high بازنده باید ۱۰۰ تا پوش‌آپ بزنه\n"
+            "/custombet 2 high dart بازنده باید ۱۰۰ تا پوش‌آپ بزنه"
         )
         return
 
@@ -734,15 +779,16 @@ async def custom_bet_handler(message: Message):
     if len(args) != 4:
         await message.answer(
             "❌ فرمت صحیح:\n"
-            "/custombet تعداد_تاس low|high شرط\n\n"
-            "مثال: /custombet 2 high بازنده باید ۱۰۰ تا پوش‌آپ بزنه"
+            "/custombet تعداد_پرتاب low|high [dice|dart] شرط\n\n"
+            "مثال: /custombet 2 high بازنده باید ۱۰۰ تا پوش‌آپ بزنه\n"
+            "مثال با دارت: /custombet 2 high dart بازنده باید ۱۰۰ تا پوش‌آپ بزنه"
         )
         return
 
     try:
         dice_count = int(args[1])
     except ValueError:
-        await message.answer("❌ تعداد تاس باید عدد باشد.")
+        await message.answer("❌ تعداد پرتاب باید عدد باشد.")
         return
 
     mode = parse_mode(args[2])
@@ -752,10 +798,24 @@ async def custom_bet_handler(message: Message):
         return
 
     if not (1 <= dice_count <= MAX_BET_DICE):
-        await message.answer(f"❌ تعداد تاس باید بین ۱ تا {MAX_BET_DICE} باشد.")
+        await message.answer(f"❌ تعداد پرتاب باید بین ۱ تا {MAX_BET_DICE} باشد.")
         return
 
-    bet_text = args[3]
+    # بخش متن شرط، خودش ممکنه با "dice" یا "dart" شروع بشه که یعنی
+    # نوع بازی هم مشخص شده؛ وگرنه پیش‌فرض همون تاس می‌مونه.
+    rest = args[3]
+    rest_parts = rest.split(maxsplit=1)
+
+    game_type = "dice"
+    bet_text = rest
+
+    if rest_parts and parse_game_type(rest_parts[0]) is not None:
+        if len(rest_parts) < 2 or not rest_parts[1].strip():
+            await message.answer("❌ متن شرط را هم بنویس.")
+            return
+
+        game_type = parse_game_type(rest_parts[0])
+        bet_text = rest_parts[1]
 
     register_user(target)
 
@@ -763,6 +823,7 @@ async def custom_bet_handler(message: Message):
 
     pending_bets[token] = {
         "type": "custom",
+        "game_type": game_type,
         "challenger_id": message.from_user.id,
         "challenger_name": message.from_user.first_name,
         "target_id": target.id,
@@ -773,6 +834,8 @@ async def custom_bet_handler(message: Message):
     }
 
     mode_text = "کمترین جمع برنده" if mode == "low" else "بیشترین جمع برنده"
+    game_emoji = GAME_EMOJIS[game_type]
+    game_name = GAME_NAMES[game_type]
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
@@ -788,9 +851,9 @@ async def custom_bet_handler(message: Message):
     ]])
 
     await message.answer(
-        f"🎲 {message.from_user.first_name} به {target.first_name} پیشنهاد بت داد:\n\n"
+        f"{game_emoji} {message.from_user.first_name} به {target.first_name} پیشنهاد بت داد:\n\n"
         f"📝 شرط: {bet_text}\n"
-        f"🎲 تعداد تاس: {dice_count}\n"
+        f"{game_emoji} نوع: {game_name} | تعداد پرتاب: {dice_count}\n"
         f"⚖️ قانون: {mode_text}\n\n"
         f"{target.first_name}, قبول می‌کنی؟",
         reply_markup=keyboard
@@ -831,7 +894,7 @@ async def bet_accept_handler(callback: CallbackQuery):
 
     pending_bets.pop(token, None)
 
-    if bet["type"] == "diamond":
+    if bet["type"] in ("diamond", "slot"):
         amount = bet["amount"]
 
         # موجودی هر دو طرف دوباره چک می‌شود (ممکن است از زمان پیشنهاد تغییر کرده باشد)
@@ -842,20 +905,52 @@ async def bet_accept_handler(callback: CallbackQuery):
             await callback.answer()
             return
 
+    key = (callback.message.chat.id, callback.message.message_id)
+
+    if bet["type"] in ("slot", "custom_slot"):
+        bet_text_line = (
+            f"📝 شرط: {bet['bet_text']}\n" if bet["type"] == "custom_slot" else ""
+        )
+
+        await callback.message.edit_text(
+            "✅ بت قبول شد!\n\n"
+            f"{bet_text_line}"
+            f"{SLOT_EMOJI} {bet['challenger_name']} و {bet['target_name']}، هرکدوم یک بار "
+            f"روی همین پیام با ایموجی {SLOT_EMOJI} Reply بزنید.\n"
+            f"⚖️ قانون: هرکی عدد بزرگ‌تر آورد برنده‌ست"
+        )
+
+        active_slot_bets[key] = {
+            "type": bet["type"],
+            "amount": bet.get("amount"),
+            "bet_text": bet.get("bet_text"),
+            "challenger_id": bet["challenger_id"],
+            "challenger_name": bet["challenger_name"],
+            "target_id": bet["target_id"],
+            "target_name": bet["target_name"],
+            "challenger_roll": None,
+            "target_roll": None,
+        }
+
+        await callback.answer()
+        return
+
     dice_count = bet["dice_count"]
     mode_text = "کمترین جمع برنده" if bet["mode"] == "low" else "بیشترین جمع برنده"
+    game_type = bet.get("game_type", "dice")
+    game_emoji = GAME_EMOJIS[game_type]
+    game_name = GAME_NAMES[game_type]
 
     await callback.message.edit_text(
         "✅ بت قبول شد!\n\n"
-        f"🎲 {bet['challenger_name']} و {bet['target_name']}، هرکدوم {dice_count} بار "
-        "روی همین پیام با ایموجی 🎲 Reply بزنید.\n"
+        f"{game_emoji} {bet['challenger_name']} و {bet['target_name']}، هرکدوم {dice_count} بار "
+        f"روی همین پیام با ایموجی {game_emoji} ({game_name}) Reply بزنید.\n"
         f"⚖️ قانون: {mode_text}"
     )
 
-    key = (callback.message.chat.id, callback.message.message_id)
-
     active_dice_bets[key] = {
         "type": bet["type"],
+        "game_type": game_type,
         "mode": bet["mode"],
         "dice_count": dice_count,
         "amount": bet.get("amount"),
@@ -876,6 +971,8 @@ async def finish_dice_bet(message: Message, key, bet):
     target_rolls = bet["target_rolls"]
     challenger_sum = sum(challenger_rolls)
     target_sum = sum(target_rolls)
+    game_emoji = GAME_EMOJIS[bet.get("game_type", "dice")]
+    game_name = GAME_NAMES[bet.get("game_type", "dice")]
 
     if challenger_sum == target_sum:
         # تساوی؛ هر دو باید از نو بندازن
@@ -884,7 +981,7 @@ async def finish_dice_bet(message: Message, key, bet):
 
         await bot.send_message(
             key[0],
-            "🎲 مساوی شد! هر دو نفر باید دوباره از اول تاس بندازید.",
+            f"{game_emoji} مساوی شد! هر دو نفر باید دوباره از اول {game_name} بندازید.",
             reply_to_message_id=key[1]
         )
         return
@@ -904,8 +1001,8 @@ async def finish_dice_bet(message: Message, key, bet):
         winner_sum, loser_sum = target_sum, challenger_sum
 
     result_text = (
-        f"🎲 {bet['challenger_name']}: {format_rolls(challenger_rolls)} = {challenger_sum}\n"
-        f"🎲 {bet['target_name']}: {format_rolls(target_rolls)} = {target_sum}\n\n"
+        f"{game_emoji} {bet['challenger_name']}: {format_rolls(challenger_rolls)} = {challenger_sum}\n"
+        f"{game_emoji} {bet['target_name']}: {format_rolls(target_rolls)} = {target_sum}\n\n"
         f"🏆 برنده: {winner_name} ({winner_sum} در مقابل {loser_sum})"
     )
 
@@ -973,18 +1070,24 @@ async def finish_dice_bet(message: Message, key, bet):
         )
 
 
-@dp.message(F.dice)
+@dp.message(F.dice.emoji.in_((GAME_EMOJIS["dice"], GAME_EMOJIS["dart"])))
 async def dice_roll_handler(message: Message):
     if not message.reply_to_message:
-        return
-
-    if message.dice.emoji != "🎲":
         return
 
     key = (message.chat.id, message.reply_to_message.message_id)
     bet = active_dice_bets.get(key)
 
     if not bet:
+        return
+
+    expected_emoji = GAME_EMOJIS[bet.get("game_type", "dice")]
+
+    if message.dice.emoji != expected_emoji:
+        # این بت با ایموجی دیگه‌ای تعریف شده (مثلاً بت دارت است ولی کاربر تاس فرستاده)
+        await message.reply(
+            f"❌ این بت با {expected_emoji} انجام می‌شه، نه {message.dice.emoji}."
+        )
         return
 
     user_id = message.from_user.id
@@ -1002,16 +1105,303 @@ async def dice_roll_handler(message: Message):
     bet[side].append(message.dice.value)
 
     remaining = bet["dice_count"] - len(bet[side])
+    game_name = GAME_NAMES[bet.get("game_type", "dice")]
 
     if remaining > 0:
-        await message.reply(f"🎲 {remaining} تاس دیگه مونده.")
+        await message.reply(f"{expected_emoji} {remaining} {game_name} دیگه مونده.")
         return
 
     if len(bet["challenger_rolls"]) < bet["dice_count"] or len(bet["target_rolls"]) < bet["dice_count"]:
-        await message.reply("✅ تاس‌های تو کامل شد، منتظر طرف مقابل بمون.")
+        await message.reply("✅ نوبت تو کامل شد، منتظر طرف مقابل بمون.")
         return
 
     await finish_dice_bet(message, key, bet)
+
+# =========================================================
+# بت اسلات (کازینو) — حالت High-roll
+# =========================================================
+# قانون: بر خلاف تاس/دارت که چند بار پرتاب و جمع می‌شن، اسلات فقط
+# یک‌بار پرتاب می‌شه. تلگرام برای اسلات عددی بین ۱ تا ۶۴ برمی‌گردونه؛
+# عدد ۶۴ یعنی جکپات (سه‌تا ۷۷۷). هرکی عدد بزرگ‌تر بیاره برنده است.
+# در تساوی، هر دو باید دوباره بندازن.
+
+SLOT_EMOJI = "🎰"
+SLOT_JACKPOT_VALUE = 64
+
+# بت‌های اسلات قبول‌شده که منتظر پرتاب هستن
+# کلید: (chat_id, message_id پیام بت)
+active_slot_bets = {}
+
+
+@dp.message(Command("betslot", ignore_case=True))
+async def slot_bet_handler(message: Message):
+    register_user(message.from_user)
+
+    target = parse_bet_target(message)
+
+    if not target:
+        await message.answer(
+            "❌ باید روی پیام کسی که می‌خوای باهاش بت ببندی Reply بزنی.\n\n"
+            "مثال:\n"
+            "/betslot 50   (۵۰ الماس؛ هرکی عدد اسلاتش بزرگ‌تر بود برنده‌ست)"
+        )
+        return
+
+    args = message.text.split()
+
+    if len(args) != 2:
+        await message.answer(
+            "❌ فرمت صحیح:\n"
+            "/betslot مقدار\n\n"
+            "مثال: /betslot 50"
+        )
+        return
+
+    try:
+        amount = int(args[1])
+    except ValueError:
+        await message.answer("❌ مقدار باید عدد باشد.")
+        return
+
+    if amount <= 0:
+        await message.answer("❌ مقدار باید بیشتر از صفر باشد.")
+        return
+
+    register_user(target)
+
+    if get_balance(message.from_user.id) < amount:
+        await message.answer("❌ موجودی الماس شما کافی نیست.")
+        return
+
+    if get_balance(target.id) < amount:
+        await message.answer(
+            f"❌ موجودی {target.first_name} برای این مقدار بت کافی نیست."
+        )
+        return
+
+    token = uuid.uuid4().hex
+
+    pending_bets[token] = {
+        "type": "slot",
+        "challenger_id": message.from_user.id,
+        "challenger_name": message.from_user.first_name,
+        "target_id": target.id,
+        "target_name": target.first_name,
+        "amount": amount,
+    }
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="✅ قبول",
+            callback_data=f"bet_accept:{token}",
+            style="success",
+        ),
+        InlineKeyboardButton(
+            text="❌ رد",
+            callback_data=f"bet_decline:{token}",
+            style="danger",
+        ),
+    ]])
+
+    await message.answer(
+        f"{SLOT_EMOJI} {message.from_user.first_name} به {target.first_name} پیشنهاد بت کازینو (اسلات) داد:\n\n"
+        f"💎 مقدار: {amount} الماس\n"
+        f"{SLOT_EMOJI} قانون: هرکی عدد اسلاتش بزرگ‌تر بود برنده‌ست (۱ تا ۶۴)\n\n"
+        f"{target.first_name}, قبول می‌کنی؟",
+        reply_markup=keyboard
+    )
+
+
+@dp.message(Command("customslot", ignore_case=True))
+async def custom_slot_bet_handler(message: Message):
+    register_user(message.from_user)
+
+    target = parse_bet_target(message)
+
+    if not target:
+        await message.answer(
+            "❌ باید روی پیام کسی که می‌خوای باهاش بت ببندی Reply بزنی.\n\n"
+            "مثال:\n"
+            "/customslot بازنده باید ۱۰۰ تا پوش‌آپ بزنه"
+        )
+        return
+
+    args = message.text.split(maxsplit=1)
+
+    if len(args) != 2:
+        await message.answer(
+            "❌ فرمت صحیح:\n"
+            "/customslot شرط\n\n"
+            "مثال: /customslot بازنده باید ۱۰۰ تا پوش‌آپ بزنه"
+        )
+        return
+
+    bet_text = args[1]
+
+    register_user(target)
+
+    token = uuid.uuid4().hex
+
+    pending_bets[token] = {
+        "type": "custom_slot",
+        "challenger_id": message.from_user.id,
+        "challenger_name": message.from_user.first_name,
+        "target_id": target.id,
+        "target_name": target.first_name,
+        "bet_text": bet_text,
+    }
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="✅ قبول",
+            callback_data=f"bet_accept:{token}",
+            style="success",
+        ),
+        InlineKeyboardButton(
+            text="❌ رد",
+            callback_data=f"bet_decline:{token}",
+            style="danger",
+        ),
+    ]])
+
+    await message.answer(
+        f"{SLOT_EMOJI} {message.from_user.first_name} به {target.first_name} پیشنهاد بت کازینو (اسلات) داد:\n\n"
+        f"📝 شرط: {bet_text}\n"
+        f"{SLOT_EMOJI} قانون: هرکی عدد اسلاتش بزرگ‌تر بود برنده‌ست (۱ تا ۶۴)\n\n"
+        f"{target.first_name}, قبول می‌کنی؟",
+        reply_markup=keyboard
+    )
+
+
+async def finish_slot_bet(key, bet):
+    challenger_value = bet["challenger_roll"]
+    target_value = bet["target_roll"]
+
+    if challenger_value == target_value:
+        # تساوی؛ هر دو باید دوباره بندازن
+        bet["challenger_roll"] = None
+        bet["target_roll"] = None
+
+        await bot.send_message(
+            key[0],
+            f"{SLOT_EMOJI} مساوی شد ({challenger_value} = {challenger_value})! "
+            "هر دو نفر باید دوباره اسلات بندازید.",
+            reply_to_message_id=key[1]
+        )
+        return
+
+    if challenger_value > target_value:
+        winner_id, winner_name = bet["challenger_id"], bet["challenger_name"]
+        loser_id, loser_name = bet["target_id"], bet["target_name"]
+        winner_value, loser_value = challenger_value, target_value
+    else:
+        winner_id, winner_name = bet["target_id"], bet["target_name"]
+        loser_id, loser_name = bet["challenger_id"], bet["challenger_name"]
+        winner_value, loser_value = target_value, challenger_value
+
+    jackpot_text = "\n🎉 جکپات! (۷۷۷)" if winner_value == SLOT_JACKPOT_VALUE else ""
+
+    result_text = (
+        f"{SLOT_EMOJI} {bet['challenger_name']}: {challenger_value}\n"
+        f"{SLOT_EMOJI} {bet['target_name']}: {target_value}\n\n"
+        f"🏆 برنده: {winner_name} ({winner_value} در مقابل {loser_value}){jackpot_text}"
+    )
+
+    active_slot_bets.pop(key, None)
+
+    if bet["type"] == "custom_slot":
+        await bot.send_message(
+            key[0],
+            f"{result_text}\n\n"
+            f"📝 شرط: {bet['bet_text']}\n"
+            f"😅 {loser_name} بازنده شد و باید به شرط عمل کنه.",
+            reply_to_message_id=key[1]
+        )
+        return
+
+    amount = bet["amount"]
+
+    if get_balance(loser_id) < amount:
+        await bot.send_message(
+            key[0],
+            f"{result_text}\n\n❌ انتقال انجام نشد؛ موجودی بازنده دیگر کافی نیست.",
+            reply_to_message_id=key[1]
+        )
+        return
+
+    try:
+        db.execute("BEGIN")
+
+        cur = db.execute("""
+            UPDATE users
+            SET diamonds = diamonds - ?
+            WHERE user_id = ? AND diamonds >= ?
+        """, (amount, loser_id, amount))
+
+        if cur.rowcount == 0:
+            db.rollback()
+            await bot.send_message(
+                key[0],
+                f"{result_text}\n\n❌ انتقال انجام نشد؛ موجودی بازنده دیگر کافی نیست.",
+                reply_to_message_id=key[1]
+            )
+            return
+
+        db.execute("""
+            UPDATE users
+            SET diamonds = diamonds + ?
+            WHERE user_id = ?
+        """, (amount, winner_id))
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        await bot.send_message(
+            key[0],
+            f"{result_text}\n\n❌ خطایی در پردازش بت رخ داد.",
+            reply_to_message_id=key[1]
+        )
+        return
+
+    log_transaction("bet", loser_id, winner_id, amount)
+
+    await bot.send_message(
+        key[0],
+        f"{result_text}\n\n💎 {amount} الماس به {winner_name} منتقل شد.",
+        reply_to_message_id=key[1]
+    )
+
+
+@dp.message(F.dice.emoji == SLOT_EMOJI)
+async def slot_roll_handler(message: Message):
+    if not message.reply_to_message:
+        return
+
+    key = (message.chat.id, message.reply_to_message.message_id)
+    bet = active_slot_bets.get(key)
+
+    if not bet:
+        return
+
+    user_id = message.from_user.id
+
+    if user_id == bet["challenger_id"]:
+        side = "challenger_roll"
+    elif user_id == bet["target_id"]:
+        side = "target_roll"
+    else:
+        return
+
+    if bet[side] is not None:
+        return
+
+    bet[side] = message.dice.value
+
+    if bet["challenger_roll"] is None or bet["target_roll"] is None:
+        await message.reply("✅ پرتاب تو ثبت شد، منتظر طرف مقابل بمون.")
+        return
+
+    await finish_slot_bet(key, bet)
 
 # =========================================================
 # OWNER GIVE
