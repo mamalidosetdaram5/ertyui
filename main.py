@@ -44,7 +44,7 @@ PREMIUM_EMOJIS = {
     "❌": "5416076321442777828",
     "💎": "5399837316384566936", 
     "✅": "5429501538806548545",
-    "⚡️": "5780464752744468119",
+    "⚡️": "6228839250884827069",
     "👤": "5470145449983748652",
     "🎁": "5778598452015402915",
     "🏆": "5474546992598264488",
@@ -64,6 +64,10 @@ PREMIUM_EMOJIS = {
     "⚖️": "5217757718378457464",
     "📝": "5386724377502952933",
     "😅": "5348554775510134247",
+    "✊": None,
+    "✋": None,
+    "✌️": None,
+    "🤝": "6228775449145644229",
 }
 
 # =========================================================
@@ -894,7 +898,7 @@ async def bet_accept_handler(callback: CallbackQuery):
 
     pending_bets.pop(token, None)
 
-    if bet["type"] in ("diamond", "slot"):
+    if bet["type"] in ("diamond", "slot", "rps"):
         amount = bet["amount"]
 
         # موجودی هر دو طرف دوباره چک می‌شود (ممکن است از زمان پیشنهاد تغییر کرده باشد)
@@ -906,6 +910,36 @@ async def bet_accept_handler(callback: CallbackQuery):
             return
 
     key = (callback.message.chat.id, callback.message.message_id)
+
+    if bet["type"] in ("rps", "custom_rps"):
+        bet_text_line = (
+            f"📝 شرط: {bet['bet_text']}\n" if bet["type"] == "custom_rps" else ""
+        )
+        rps_token = uuid.uuid4().hex
+
+        active_rps_bets[key] = {
+            "type": bet["type"],
+            "token": rps_token,
+            "amount": bet.get("amount"),
+            "bet_text": bet.get("bet_text"),
+            "challenger_id": bet["challenger_id"],
+            "challenger_name": bet["challenger_name"],
+            "target_id": bet["target_id"],
+            "target_name": bet["target_name"],
+            "challenger_choice": None,
+            "target_choice": None,
+        }
+
+        await callback.message.edit_text(
+            "✅ بت قبول شد!\n\n"
+            f"{bet_text_line}"
+            f"✊✋✌️ {bet['challenger_name']} و {bet['target_name']}، با دکمه‌های زیر "
+            "انتخابت رو بزن (انتخابت تا وقتی هر دو نفر بزنن مخفی می‌مونه).",
+            reply_markup=build_rps_keyboard(rps_token)
+        )
+
+        await callback.answer()
+        return
 
     if bet["type"] in ("slot", "custom_slot"):
         bet_text_line = (
@@ -1402,6 +1436,328 @@ async def slot_roll_handler(message: Message):
         return
 
     await finish_slot_bet(key, bet)
+
+# =========================================================
+# مینی‌گیم سنگ‌کاغذ‌قیچی (RPS)
+# =========================================================
+# قانون: برخلاف تاس/دارت/اسلات که با فرستادن ایموجی native تلگرام
+# انجام می‌شدن، اینجا هر نفر با زدن یکی از سه دکمه‌ی اینلاین
+# انتخابش رو ثبت می‌کنه. تا وقتی هر دو انتخاب نکردن، متن پیام
+# چیزی از انتخاب‌ها لو نمی‌ده (فقط با alert خصوصی به خودش تایید
+# داده می‌شه) تا بازی منصفانه بمونه.
+
+RPS_CHOICES = {
+    "rock": "✊",
+    "paper": "✋",
+    "scissors": "✌️",
+}
+
+RPS_NAMES = {
+    "rock": "سنگ",
+    "paper": "کاغذ",
+    "scissors": "قیچی",
+}
+
+# چی روی چی برنده‌ست: key می‌بره roی value
+RPS_BEATS = {
+    "rock": "scissors",
+    "paper": "rock",
+    "scissors": "paper",
+}
+
+# بت‌های RPS قبول‌شده که منتظر انتخاب هر دو طرف هستن
+# کلید: (chat_id, message_id پیام بت)
+active_rps_bets = {}
+
+
+def build_rps_keyboard(token):
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✊ سنگ", callback_data=f"rps_pick:{token}:rock"),
+        InlineKeyboardButton(text="✋ کاغذ", callback_data=f"rps_pick:{token}:paper"),
+        InlineKeyboardButton(text="✌️ قیچی", callback_data=f"rps_pick:{token}:scissors"),
+    ]])
+
+
+@dp.message(Command("rps", ignore_case=True))
+async def rps_bet_handler(message: Message):
+    register_user(message.from_user)
+
+    target = parse_bet_target(message)
+
+    if not target:
+        await message.answer(
+            "❌ باید روی پیام کسی که می‌خوای باهاش بت ببندی Reply بزنی.\n\n"
+            "مثال:\n"
+            "/rps 50   (۵۰ الماس؛ سنگ‌کاغذ‌قیچی بازی کنید)"
+        )
+        return
+
+    args = message.text.split()
+
+    if len(args) != 2:
+        await message.answer(
+            "❌ فرمت صحیح:\n"
+            "/rps مقدار\n\n"
+            "مثال: /rps 50"
+        )
+        return
+
+    try:
+        amount = int(args[1])
+    except ValueError:
+        await message.answer("❌ مقدار باید عدد باشد.")
+        return
+
+    if amount <= 0:
+        await message.answer("❌ مقدار باید بیشتر از صفر باشد.")
+        return
+
+    register_user(target)
+
+    if get_balance(message.from_user.id) < amount:
+        await message.answer("❌ موجودی الماس شما کافی نیست.")
+        return
+
+    if get_balance(target.id) < amount:
+        await message.answer(
+            f"❌ موجودی {target.first_name} برای این مقدار بت کافی نیست."
+        )
+        return
+
+    token = uuid.uuid4().hex
+
+    pending_bets[token] = {
+        "type": "rps",
+        "challenger_id": message.from_user.id,
+        "challenger_name": message.from_user.first_name,
+        "target_id": target.id,
+        "target_name": target.first_name,
+        "amount": amount,
+    }
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="✅ قبول",
+            callback_data=f"bet_accept:{token}",
+            style="success",
+        ),
+        InlineKeyboardButton(
+            text="❌ رد",
+            callback_data=f"bet_decline:{token}",
+            style="danger",
+        ),
+    ]])
+
+    await message.answer(
+        f"✊✋✌️ {message.from_user.first_name} به {target.first_name} پیشنهاد بت سنگ‌کاغذ‌قیچی داد:\n\n"
+        f"💎 مقدار: {amount} الماس\n\n"
+        f"{target.first_name}, قبول می‌کنی؟",
+        reply_markup=keyboard
+    )
+
+
+@dp.message(Command("customrps", ignore_case=True))
+async def custom_rps_bet_handler(message: Message):
+    register_user(message.from_user)
+
+    target = parse_bet_target(message)
+
+    if not target:
+        await message.answer(
+            "❌ باید روی پیام کسی که می‌خوای باهاش بت ببندی Reply بزنی.\n\n"
+            "مثال:\n"
+            "/customrps بازنده باید ۱۰۰ تا پوش‌آپ بزنه"
+        )
+        return
+
+    args = message.text.split(maxsplit=1)
+
+    if len(args) != 2:
+        await message.answer(
+            "❌ فرمت صحیح:\n"
+            "/customrps شرط\n\n"
+            "مثال: /customrps بازنده باید ۱۰۰ تا پوش‌آپ بزنه"
+        )
+        return
+
+    bet_text = args[1]
+
+    register_user(target)
+
+    token = uuid.uuid4().hex
+
+    pending_bets[token] = {
+        "type": "custom_rps",
+        "challenger_id": message.from_user.id,
+        "challenger_name": message.from_user.first_name,
+        "target_id": target.id,
+        "target_name": target.first_name,
+        "bet_text": bet_text,
+    }
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="✅ قبول",
+            callback_data=f"bet_accept:{token}",
+            style="success",
+        ),
+        InlineKeyboardButton(
+            text="❌ رد",
+            callback_data=f"bet_decline:{token}",
+            style="danger",
+        ),
+    ]])
+
+    await message.answer(
+        f"✊✋✌️ {message.from_user.first_name} به {target.first_name} پیشنهاد بت سنگ‌کاغذ‌قیچی داد:\n\n"
+        f"📝 شرط: {bet_text}\n\n"
+        f"{target.first_name}, قبول می‌کنی؟",
+        reply_markup=keyboard
+    )
+
+
+async def finish_rps_bet(bot_message_chat_id, bot_message_id, bet):
+    challenger_choice = bet["challenger_choice"]
+    target_choice = bet["target_choice"]
+
+    challenger_emoji = RPS_CHOICES[challenger_choice]
+    target_emoji = RPS_CHOICES[target_choice]
+    challenger_name_fa = RPS_NAMES[challenger_choice]
+    target_name_fa = RPS_NAMES[target_choice]
+
+    picks_text = (
+        f"✊✋✌️ {bet['challenger_name']}: {challenger_emoji} ({challenger_name_fa})\n"
+        f"✊✋✌️ {bet['target_name']}: {target_emoji} ({target_name_fa})\n\n"
+    )
+
+    if challenger_choice == target_choice:
+        # تساوی؛ هر دو باید دوباره انتخاب کنن
+        bet["challenger_choice"] = None
+        bet["target_choice"] = None
+
+        token = bet["token"]
+
+        await bot.edit_message_text(
+            chat_id=bot_message_chat_id,
+            message_id=bot_message_id,
+            text=(
+                f"{picks_text}"
+                "🤝 مساوی شد! هر دو نفر باید دوباره انتخاب کنید."
+            ),
+            reply_markup=build_rps_keyboard(token)
+        )
+        return
+
+    if RPS_BEATS[challenger_choice] == target_choice:
+        winner_id, winner_name = bet["challenger_id"], bet["challenger_name"]
+        loser_id, loser_name = bet["target_id"], bet["target_name"]
+    else:
+        winner_id, winner_name = bet["target_id"], bet["target_name"]
+        loser_id, loser_name = bet["challenger_id"], bet["challenger_name"]
+
+    result_text = f"{picks_text}🏆 برنده: {winner_name}"
+
+    key = (bot_message_chat_id, bot_message_id)
+    active_rps_bets.pop(key, None)
+
+    if bet["type"] == "custom_rps":
+        await bot.edit_message_text(
+            chat_id=bot_message_chat_id,
+            message_id=bot_message_id,
+            text=(
+                f"{result_text}\n\n"
+                f"📝 شرط: {bet['bet_text']}\n"
+                f"😅 {loser_name} بازنده شد و باید به شرط عمل کنه."
+            )
+        )
+        return
+
+    amount = bet["amount"]
+
+    if get_balance(loser_id) < amount:
+        await bot.edit_message_text(
+            chat_id=bot_message_chat_id,
+            message_id=bot_message_id,
+            text=f"{result_text}\n\n❌ انتقال انجام نشد؛ موجودی بازنده دیگر کافی نیست."
+        )
+        return
+
+    try:
+        db.execute("BEGIN")
+
+        cur = db.execute("""
+            UPDATE users
+            SET diamonds = diamonds - ?
+            WHERE user_id = ? AND diamonds >= ?
+        """, (amount, loser_id, amount))
+
+        if cur.rowcount == 0:
+            db.rollback()
+            await bot.edit_message_text(
+                chat_id=bot_message_chat_id,
+                message_id=bot_message_id,
+                text=f"{result_text}\n\n❌ انتقال انجام نشد؛ موجودی بازنده دیگر کافی نیست."
+            )
+            return
+
+        db.execute("""
+            UPDATE users
+            SET diamonds = diamonds + ?
+            WHERE user_id = ?
+        """, (amount, winner_id))
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        await bot.edit_message_text(
+            chat_id=bot_message_chat_id,
+            message_id=bot_message_id,
+            text=f"{result_text}\n\n❌ خطایی در پردازش بت رخ داد."
+        )
+        return
+
+    log_transaction("bet", loser_id, winner_id, amount)
+
+    await bot.edit_message_text(
+        chat_id=bot_message_chat_id,
+        message_id=bot_message_id,
+        text=f"{result_text}\n\n💎 {amount} الماس به {winner_name} منتقل شد."
+    )
+
+
+@dp.callback_query(F.data.startswith("rps_pick:"))
+async def rps_pick_handler(callback: CallbackQuery):
+    _, token, choice = callback.data.split(":")
+
+    key = (callback.message.chat.id, callback.message.message_id)
+    bet = active_rps_bets.get(key)
+
+    if not bet or bet.get("token") != token:
+        await callback.answer("❌ این بازی دیگر فعال نیست.", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+
+    if user_id == bet["challenger_id"]:
+        side = "challenger_choice"
+    elif user_id == bet["target_id"]:
+        side = "target_choice"
+    else:
+        await callback.answer("❌ این بازی برای تو نیست.", show_alert=True)
+        return
+
+    if bet[side] is not None:
+        await callback.answer("✅ قبلاً انتخاب کردی، منتظر طرف مقابل بمون.")
+        return
+
+    bet[side] = choice
+
+    if bet["challenger_choice"] is None or bet["target_choice"] is None:
+        await callback.answer(f"✅ انتخابت ({RPS_NAMES[choice]}) ثبت شد. منتظر طرف مقابل بمون.")
+        return
+
+    await callback.answer(f"✅ انتخابت ({RPS_NAMES[choice]}) ثبت شد.")
+    await finish_rps_bet(key[0], key[1], bet)
 
 # =========================================================
 # OWNER GIVE
